@@ -1,0 +1,11 @@
+{
+  "python.envFile": "${workspaceFolder}/.env",
+  "python.defaultInterpreterPath": "${workspaceFolder}/../.venv/Scripts/python.exe",
+  "[dotenv]": {
+    "editor.encoding": "utf8"
+  },
+  "files.encoding": "utf8",
+  "files.associations": {
+    ".env": "dotenv"
+  }
+}

@@ -1,0 +1,9 @@
+# Notebooks entram no commit sem as saídas — elas carregam linhas reais dos
+# dados (datas, pace, activity_id do Strava) e ficam no histórico para sempre.
+# O arquivo local mantém as saídas na tela; só o que vai para o git é limpo.
+#
+# Este arquivo declara o filtro, mas quem o executa é o driver registrado em
+# .git/config. Sem rodar `nbstripout --install` no clone, o git ignora a
+# declaração em silêncio e commita as saídas. Ver README.
+*.ipynb filter=nbstripout
+*.ipynb diff=ipynb
