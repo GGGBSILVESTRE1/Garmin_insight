@@ -11,6 +11,11 @@ dependencies = [
     "fitparse>=1.2.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.27.0",
+    # Cliente não-oficial do Garmin Connect (roda sobre o garth), usado pela
+    # sincronização semanal de wellness — ver src/ingestion/garmin_api.py
+    # 0.3+ : o login(tokenstore) grava a sessão sozinho e o cliente garth mora
+    # em .client — versões antigas expõem outra superfície
+    "garminconnect>=0.3.0",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +24,13 @@ dev = [
     "ruff>=0.5.0",
     # Limpa as saídas dos notebooks no commit — ver .gitattributes
     "nbstripout>=0.7",
+]
+# Interface. Separada dos notebooks porque o app não precisa de matplotlib nem
+# de kernel Jupyter — e quem só quer rodar o app não deve instalar os dois.
+app = [
+    "streamlit>=1.30",
+    "pandas>=2.2",
+    "altair>=5.0",
 ]
 # Só os notebooks precisam disso — o pipeline de export roda sem nada disso aqui
 notebooks = [

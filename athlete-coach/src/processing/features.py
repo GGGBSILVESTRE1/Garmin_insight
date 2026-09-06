@@ -10,6 +10,19 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 
+# Zonas de FC em ordem, sem zone_0 (tempo abaixo de Z1: pausa, semáforo,
+# descanso entre séries — não é treino).
+ZONAS_ORDEM = ["zone_1", "zone_2", "zone_3", "zone_4", "zone_5"]
+
+# Modelo polarizado: as cinco zonas colapsadas nas três faixas que importam para
+# a leitura de intensidade. Fica aqui, e não em plots.py, porque é uma
+# derivação de dado — quem só quer o número não deve precisar de matplotlib.
+FAIXAS_POLARIZADAS = {
+    "Baixa intensidade (Z1+Z2)": ["zone_1", "zone_2"],
+    "Gray zone (Z3)": ["zone_3"],
+    "Alta intensidade (Z4+Z5)": ["zone_4", "zone_5"],
+}
+
 
 def format_week(df, date_col="date", origin=None):
     """

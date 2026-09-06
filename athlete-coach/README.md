@@ -21,13 +21,15 @@ deixou de ser o produto principal.
 ## Setup
 
 ```bash
-# 1. Criar e ativar o venv
+# 1. Criar e ativar o venv (fica na RAIZ do repositório, um nível acima daqui)
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/Mac
 
 # 2. Instalar o projeto em modo editável (obrigatório)
-pip install -e ".[dev,notebooks]"
+#    O pyproject.toml está em athlete-coach/, NÃO na raiz do repositório.
+pip install -e "./athlete-coach[dev,notebooks]"   # rodando da raiz
+pip install -e ".[dev,notebooks]"                 # rodando de dentro de athlete-coach/
 
 # 3. Credenciais do Strava
 cp .env.example .env          # preencha CLIENT_ID e CLIENT_SECRET
@@ -65,6 +67,25 @@ Relatórios e privacidade → Exportar dados), que precisa ser descompactado em
 
 Para explorar em notebook, comece por `notebooks/00_overview.ipynb` — ele mapeia o que
 existe nos CSVs; `01_wellness`, `02_activities` e `03_load_recovery` analisam cada recorte.
+
+### Sincronização semanal
+
+```bash
+python scripts/strava_export.py    # atividades
+python scripts/garmin_sync.py      # wellness (sono, HRV, FC de repouso, SpO2)
+python scripts/export_context.py   # reprocessa os CSVs
+```
+
+O `garmin_sync.py` usa a biblioteca não-oficial `garminconnect` — não existe API
+self-service do Garmin para os próprios dados. **Rode a primeira vez
+manualmente**, não pelo agendador: o login pode pedir MFA e precisa de terminal.
+Depois a sessão fica salva em `dados/.garmin_tokens` e as execuções agendadas
+funcionam sozinhas, até o token expirar — aí o script falha pedindo outra
+execução manual.
+
+Ele busca só o que falta desde a última vez, e revisita os últimos dias de cada
+rodada porque o Garmin revisa score de sono e HRV depois do fato. Para preencher
+um período maior de uma vez: `python scripts/garmin_sync.py --desde 2026-08-01`.
 
 ## Os dados
 
@@ -193,7 +214,8 @@ athlete-coach/
 │   ├── config.py               # todos os caminhos do projeto
 │   ├── ingestion/
 │   │   ├── garmin.py           # .fit, CSV e JSON do export GDPR
-│   │   ├── garmin_wellness.py  # sono, HRV, estresse, VO2max
+│   │   ├── garmin_wellness.py  # sono, HRV, estresse, VO2max (export GDPR)
+│   │   ├── garmin_api.py       # os mesmos dados via API do Connect, semanal
 │   │   └── strava.py           # activities.json
 │   └── processing/
 │       ├── metrics.py          # CTL/ATL/TSB, resumos, build_tables
@@ -232,24 +254,15 @@ wellness, o volume é pequeno para modelos com muitos parâmetros. Regressão
 sobre tendências e detecção de anomalias (HRV fora da baseline, saltos de
 carga) são mais realistas do que previsão de performance.
 
-## O que não vai para o repositório
+## Documentação
 
-Os dados são pessoais e ficam todos fora do git — `dados/` inteiro, o `.env` e o
-`athlete_context.md`. Cada um roda o projeto com o próprio export do Garmin e a
-própria conta do Strava; o repositório carrega o código, não o atleta.
-
-| Fora do repo | Por quê |
+| Documento | Conteúdo |
 |---|---|
-| `dados/garmin/` | Export GDPR: e-mail nos nomes dos arquivos, perfil, biometria, IDs de dispositivo |
-| `dados/strava/activities.json` | `summary_polyline` e `start_latlng` com precisão de metros — o trajeto de cada treino |
-| `dados/processed/*.csv` | Série de sono, HRV e FC de repouso (só o `README.md` gerado é versionado) |
-| `athlete_context.md` | O resumo de saúde completo |
-| `notebooks/_arquivo/` | Notebooks antigos salvos com as saídas dentro |
-| Saídas dos notebooks | Removidas no commit pelo `nbstripout` — tabelas de `head()` mostram datas, pace e `activity_id` |
+| [`docs/relatorio-semanal.md`](docs/relatorio-semanal.md) | Decisões do relatório semanal, pipeline completa e tecnologias do Streamlit |
+| `CLAUDE.md` | Referência técnica: unidades do Garmin, merge das fontes, convenções |
+
 
 ## Dependências
 
 `fitparse`, `python-dotenv`, `httpx`. Os notebooks pedem `pandas`, `numpy`,
 `matplotlib`, `scipy` e `ipykernel`, instalados pelo extra: `pip install -e ".[notebooks]"`.
-Nenhuma chave da API da Anthropic é necessária — a parte de coach, quando usada,
-roda via claude.ai Projects.

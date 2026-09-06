@@ -9,9 +9,9 @@ de cada figura continua no notebook, onde dá para ajustar olhando o resultado.
 import matplotlib.pyplot as plt
 import pandas as pd
 
-# Zonas de FC em ordem, sem zone_0 (tempo abaixo de Z1: pausa, semáforo,
-# descanso entre séries — não é treino).
-ZONAS_ORDEM = ["zone_1", "zone_2", "zone_3", "zone_4", "zone_5"]
+# Reexportados de features: a definição das faixas é derivação de dado, não de
+# desenho. Ficam disponíveis aqui para os notebooks importarem tudo de um lugar.
+from processing.features import FAIXAS_POLARIZADAS, ZONAS_ORDEM  # noqa: F401
 
 ZONAS_CORES = ["#2ecc71", "#3498db", "#f39c12", "#e67e22", "#e74c3c"]
 
@@ -22,14 +22,6 @@ ZONAS_LABELS = [
     "Z4 - Limiar",
     "Z5 - VO2max",
 ]
-
-# Modelo polarizado: as cinco zonas colapsadas nas três faixas que importam para
-# a leitura de intensidade.
-FAIXAS_POLARIZADAS = {
-    "Baixa intensidade (Z1+Z2)": ["zone_1", "zone_2"],
-    "Gray zone (Z3)": ["zone_3"],
-    "Alta intensidade (Z4+Z5)": ["zone_4", "zone_5"],
-}
 
 FAIXAS_CORES = ["#27ae60", "#f39c12", "#c0392b"]
 

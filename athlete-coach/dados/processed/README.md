@@ -6,19 +6,19 @@ Gerado por `processing.metrics.build_tables()`. Não editar à mão — o conte�
 
 | Arquivo | Linhas | Conteúdo |
 |---|---|---|
-| `activities.csv` | 176 | Uma linha por treino (Garmin + Strava), com TSS e todas as métricas específicas de cada fonte. |
-| `activity_hr_zones.csv` | 574 | Tempo em cada zona de frequência cardíaca, por atividade (formato longo). |
-| `activity_power_zones.csv` | 270 | Tempo em cada zona de potência, por atividade (formato longo). |
-| `strength_sets.csv` | 111 | Séries de musculação por exercício: séries, repetições, volume e carga máxima. |
+| `activities.csv` | 198 | Uma linha por treino (Garmin + Strava), com TSS e todas as métricas específicas de cada fonte. |
+| `activity_hr_zones.csv` | 694 | Tempo em cada zona de frequência cardíaca, por atividade (formato longo). |
+| `activity_power_zones.csv` | 315 | Tempo em cada zona de potência, por atividade (formato longo). |
+| `strength_sets.csv` | 153 | Séries de musculação por exercício: séries, repetições, volume e carga máxima. |
 | `training_load_daily.csv` | 366 | Série diária de TSS, CTL (fitness), ATL (fadiga) e TSB (forma). |
 | `weekly_summary.csv` | 52 | Agregado semanal: volume, duração, pace médio e distribuição por esporte. |
-| `wellness_daily.csv` | 119 | Uma linha por dia: sono e estágios, HRV, FC de repouso, estresse, passos, SpO2 e VO2max. |
+| `wellness_daily.csv` | 147 | Uma linha por dia: sono e estágios, HRV, FC de repouso, estresse, passos, SpO2 e VO2max. |
 
 ## Cobertura
 
-- **Atividades:** 176 (strava: 94, strava+garmin: 82)
-- **Período:** 2024-06-02 a 2026-08-06
-- **Dias de wellness:** 119 (2026-04-08 a 2026-08-04)
+- **Atividades:** 198 (strava: 92, strava+garmin: 106)
+- **Período:** 2024-06-02 a 2026-09-01
+- **Dias de wellness:** 147 (2026-04-08 a 2026-09-01)
 
 ## Convenções de unidade
 
@@ -30,4 +30,4 @@ Valores já convertidos para unidades reais na ingestão:
 - Garmin `calories`/`bmrCalories` vêm a 10x o valor real
 - O export do Strava **não traz calorias** — a coluna só é preenchida em treinos Garmin
 
-*Gerado em 17/08/2026 18:13*
+*Gerado em 03/09/2026 17:50*

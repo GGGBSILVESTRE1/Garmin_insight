@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from config import ATHLETE_CONTEXT, GARMIN_DIR, PROCESSED_DIR, STRAVA_DIR
+from config import ATHLETE_CONTEXT, GARMIN_API_DIR, GARMIN_DIR, PROCESSED_DIR, STRAVA_DIR
 from ingestion.garmin import GarminIngestion
+from ingestion.garmin_api import GarminApiIngestion
 from ingestion.garmin_wellness import GarminWellnessIngestion
 from ingestion.strava import StravaIngestion
 from processing.metrics import TrainingLoadMetrics, build_tables
@@ -327,12 +328,68 @@ sinais de sobretreino, e qualquer outra duvida relacionada a performance e saude
 # ---------------------------------------------------------------------------
 
 
+def _carregar_atividades_garmin() -> list:
+    """
+    Une as atividades das duas fontes Garmin: a API do Connect e o export GDPR.
+
+    A deduplicação é exata, não heurística: as duas fontes usam o mesmo
+    `activityId` do Garmin. A API tem precedência por ser a fonte viva — o
+    export só avança quando alguém baixa o zip à mão.
+
+    Atenção: as unidades das duas fontes são diferentes (o export guarda
+    distância em centímetros e calorias a 10x; a API devolve valores reais).
+    Cada parser já converte para unidade real antes de chegar aqui, então nada
+    de escala acontece nesta função. Para conferir, use
+    `python scripts/verificar_unidades_garmin.py`.
+    """
+    api = GarminApiIngestion(GARMIN_API_DIR).load_activities() if GARMIN_API_DIR.exists() else []
+    export = GarminIngestion(GARMIN_DIR).load_garmin_connect_json()
+
+    por_id = {a.activity_id: a for a in export}
+    novas = 0
+    for atividade in api:
+        if atividade.activity_id not in por_id:
+            novas += 1
+        por_id[atividade.activity_id] = atividade  # API sobrepõe o export
+
+    if api:
+        print(f"  atividades Garmin: {len(api)} da API ({novas} fora do export) "
+              f"+ {len(export)} do export = {len(por_id)} únicas")
+
+    return sorted(por_id.values(), key=lambda a: a.start_time)
+
+
+def _carregar_wellness() -> dict:
+    """
+    Funde as duas fontes de wellness: a API do Connect e o export GDPR.
+
+    O export cobre o passado e só avança quando um download manual é feito; a
+    API cobre daqui para frente, sincronizada por scripts/garmin_sync.py. As
+    duas produzem `dict[date, DailyWellness]`, então basta fundir.
+
+    A API vem primeiro de propósito: `_merge` só preenche campo vazio, então
+    quem chega antes tem precedência — e o dado da API é o mais fresco, além de
+    trazer SpO2, que o export nunca preencheu.
+    """
+    api = GarminApiIngestion(GARMIN_API_DIR).load_all() if GARMIN_API_DIR.exists() else {}
+    export = GarminWellnessIngestion(GARMIN_DIR).load_all()
+
+    registros = {}
+    GarminWellnessIngestion._merge(registros, api)
+    GarminWellnessIngestion._merge(registros, export)
+
+    if api:
+        print(f"  wellness: {len(api)} dias da API + {len(export)} do export = {len(registros)} únicos")
+
+    return dict(sorted(registros.items()))
+
+
 def main():
     print("Carregando dados...")
 
-    garmin = GarminIngestion(GARMIN_DIR).load_garmin_connect_json()
+    garmin = _carregar_atividades_garmin()
     strava = StravaIngestion(STRAVA_DIR).load_export_json()
-    wellness = GarminWellnessIngestion(GARMIN_DIR).load_all()
+    wellness = _carregar_wellness()
 
     garmin_only = _merge_garmin_into_strava(garmin, strava)
     all_acts = sorted(garmin_only + strava, key=lambda a: a.start_time)
