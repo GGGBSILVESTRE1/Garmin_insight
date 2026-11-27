@@ -31,6 +31,23 @@ class WeeklySummary:
     avg_pace_str: str | None
 
 
+# Referências do TSS simplificado. São julgamento, não fato: ficam aqui em cima
+# para serem contestadas sem caçar número no meio da fórmula.
+FTP_BIKE_W = 250  # FTP de ciclismo assumido (só vale para bike)
+FC_REFERENCIA = 185  # FC que normaliza a intensidade nos treinos sem potência de bike
+INTENSIDADE_SEM_DADO = 0.6  # treino sem FC nem potência (manual, por exemplo)
+
+# Esportes em que a potência é de pedal e faz sentido comparar com FTP
+_ESPORTES_BIKE = {"ride", "virtualride", "ebikeride", "mountainbikeride", "gravelride"}
+
+
+def _eh_bike(activity: Activity) -> bool:
+    """True se a atividade é pedalada — pelo sport (Strava) ou pela categoria."""
+    if str(activity.sport).lower() in _ESPORTES_BIKE:
+        return True
+    return activity.extra.get("categoria") == "bike"
+
+
 @dataclass
 class TrainingLoadMetrics:
     """
@@ -43,23 +60,32 @@ class TrainingLoadMetrics:
 
     def training_stress_score(self, activity: Activity) -> float:
         """
-        Estima o TSS de um treino. Usa potência quando existe, senão FC.
+        Estima o TSS de um treino. Potência só em bike; o resto usa FC.
         Fórmula: TSS ≈ (horas × intensidade²) × 100
 
-        A intensidade é normalizada por valores de referência fixos (FTP de
-        250W, FC máxima de 185) — ajuste-os se o seu perfil for diferente,
-        porque eles deslocam a escala inteira de CTL/ATL.
+        A intensidade é normalizada por valores de referência fixos
+        (`FTP_BIKE_W`, `FC_REFERENCIA`) — ajuste se o seu perfil mudar, porque
+        eles deslocam a escala inteira de CTL/ATL.
+
+        Por que potência só em bike: a potência de corrida do Garmin não tem
+        nada a ver com FTP de ciclismo. Dividir 525 W de esteira por 250 W dava
+        intensidade 2,1 e TSS 344 em 47 min (28/09/2026). Corrida com potência
+        cai no ramo de FC, igual corrida sem potência — assim as duas ficam na
+        mesma escala e o CTL para de pular quando o relógio mede watts.
         """
         duration_h = activity.duration_seconds / 3600
-        if activity.avg_power_watts and activity.avg_power_watts > 0:
-            # Ciclismo: assume FTP de 250W como padrão
-            intensity = activity.avg_power_watts / 250
+        usa_potencia = (
+            activity.avg_power_watts
+            and activity.avg_power_watts > 0
+            and _eh_bike(activity)
+        )
+        if usa_potencia:
+            intensity = activity.avg_power_watts / FTP_BIKE_W
         elif activity.avg_heart_rate:
-            # Corrida: normaliza pela FC máxima assumida de 185
-            intensity = activity.avg_heart_rate / 185
+            intensity = activity.avg_heart_rate / FC_REFERENCIA
         else:
             # Sem FC nem potência (ex.: treino manual), estimativa conservadora
-            intensity = 0.6
+            intensity = INTENSIDADE_SEM_DADO
 
         return round(duration_h * (intensity ** 2) * 100, 1)
 
@@ -85,12 +111,17 @@ class TrainingLoadMetrics:
         end_date = datetime.now().date()
         start_date = end_date - timedelta(days=window_days)
 
+        # Aquecimento: a recursão começa na primeira atividade do histórico, e
+        # não no início da janela. Antes ela partia de CTL = 0 no primeiro dia
+        # da janela, e os primeiros ~3×τ dias (uns 4 meses com τ=42) saíam
+        # subestimados. A saída continua recortada na janela pedida.
+        primeiro_dia = min(act.start_time.date() for act in self.activities)
+        inicio_recursao = min(primeiro_dia, start_date)
+
         # Consolida os treinos do dia num único TSS
         daily_tss: dict = defaultdict(float)
         for act in self.activities:
-            d = act.start_time.date()
-            if d >= start_date:
-                daily_tss[d] += self.training_stress_score(act)
+            daily_tss[act.start_time.date()] += self.training_stress_score(act)
 
         # Fatores de decaimento: α = 1 - e^(-1/τ), padrão TrainingPeaks
         ctl_alpha = 1 - 2.718281828 ** (-1 / ctl_days)   # ≈ 0.0235 para τ=42
@@ -101,18 +132,19 @@ class TrainingLoadMetrics:
         ctl = 0.0
         atl = 0.0
         results = {}
-        current = start_date
+        current = inicio_recursao
         while current <= end_date:
             tss = daily_tss.get(current, 0.0)
             ctl = ctl + (tss - ctl) * ctl_alpha
             atl = atl + (tss - atl) * atl_alpha
             tsb = ctl - atl
-            results[str(current)] = {
-                "tss": round(tss, 1),
-                "ctl": round(ctl, 1),
-                "atl": round(atl, 1),
-                "tsb": round(tsb, 1),
-            }
+            if current >= start_date:
+                results[str(current)] = {
+                    "tss": round(tss, 1),
+                    "ctl": round(ctl, 1),
+                    "atl": round(atl, 1),
+                    "tsb": round(tsb, 1),
+                }
             current += timedelta(days=1)
 
         return results

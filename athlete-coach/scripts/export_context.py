@@ -13,11 +13,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from config import ATHLETE_CONTEXT, GARMIN_API_DIR, GARMIN_DIR, PROCESSED_DIR, STRAVA_DIR
-from ingestion.garmin import GarminIngestion
-from ingestion.garmin_api import GarminApiIngestion
-from ingestion.garmin_wellness import GarminWellnessIngestion
-from ingestion.strava import StravaIngestion
+from config import ATHLETE_CONTEXT, PROCESSED_DIR
+from processing.fontes import carregar_wellness, montar_atividades
 from processing.metrics import TrainingLoadMetrics, build_tables
 
 
@@ -252,56 +249,6 @@ def section_profile(activities, wellness) -> str:
     return "\n".join(lines)
 
 
-def _merge_garmin_into_strava(
-    garmin: list, strava: list, time_tol_s: int = 600, dist_tol_m: float = 200
-) -> list:
-    """Fold each Garmin activity into its synced Strava twin, keeping one row.
-
-    The Garmin watch auto-uploads workouts to Strava, so the same session shows
-    up in both exports (same start_time, same distance). Counting both would
-    double CTL/ATL/TSB, but simply dropping the Garmin side throws away
-    everything Strava never receives: HR/power zone splits, RPE and workout
-    feel, running dynamics, body battery cost, and strength-training sets.
-
-    So the match is merged instead — Strava stays the base record (full history,
-    refreshed weekly) and the Garmin fields fill in around it. Garmin activities
-    with no Strava match are returned as their own entries.
-    """
-    unmatched = []
-    merged = 0
-    for g in garmin:
-        match = next(
-            (
-                s for s in strava
-                if abs((g.start_time - s.start_time).total_seconds()) <= time_tol_s
-                and abs(g.distance_meters - s.distance_meters) <= dist_tol_m
-            ),
-            None,
-        )
-        if match is None:
-            unmatched.append(g)
-            continue
-
-        # Core fields Strava leaves empty — calories only ever come from Garmin.
-        for field in ("calories", "avg_heart_rate", "max_heart_rate",
-                      "elevation_gain_meters", "avg_power_watts"):
-            if getattr(match, field) is None:
-                setattr(match, field, getattr(g, field))
-
-        # Garmin-only extras; never clobber a value Strava already reported.
-        for key, value in g.extra.items():
-            match.extra.setdefault(key, value)
-        match.extra["garmin_activity_id"] = g.activity_id
-        match.source = "strava+garmin"
-        merged += 1
-
-    if merged:
-        print(f"  {merged} atividades sincronizadas Garmin->Strava (dados fundidos)")
-    if unmatched:
-        print(f"  {len(unmatched)} atividades so no Garmin")
-    return unmatched
-
-
 def system_prompt() -> str:
     return """## Instrucoes para o Claude (cole no campo "Instructions" do Project)
 
@@ -328,71 +275,12 @@ sinais de sobretreino, e qualquer outra duvida relacionada a performance e saude
 # ---------------------------------------------------------------------------
 
 
-def _carregar_atividades_garmin() -> list:
-    """
-    Une as atividades das duas fontes Garmin: a API do Connect e o export GDPR.
-
-    A deduplicação é exata, não heurística: as duas fontes usam o mesmo
-    `activityId` do Garmin. A API tem precedência por ser a fonte viva — o
-    export só avança quando alguém baixa o zip à mão.
-
-    Atenção: as unidades das duas fontes são diferentes (o export guarda
-    distância em centímetros e calorias a 10x; a API devolve valores reais).
-    Cada parser já converte para unidade real antes de chegar aqui, então nada
-    de escala acontece nesta função. Para conferir, use
-    `python scripts/verificar_unidades_garmin.py`.
-    """
-    api = GarminApiIngestion(GARMIN_API_DIR).load_activities() if GARMIN_API_DIR.exists() else []
-    export = GarminIngestion(GARMIN_DIR).load_garmin_connect_json()
-
-    por_id = {a.activity_id: a for a in export}
-    novas = 0
-    for atividade in api:
-        if atividade.activity_id not in por_id:
-            novas += 1
-        por_id[atividade.activity_id] = atividade  # API sobrepõe o export
-
-    if api:
-        print(f"  atividades Garmin: {len(api)} da API ({novas} fora do export) "
-              f"+ {len(export)} do export = {len(por_id)} únicas")
-
-    return sorted(por_id.values(), key=lambda a: a.start_time)
-
-
-def _carregar_wellness() -> dict:
-    """
-    Funde as duas fontes de wellness: a API do Connect e o export GDPR.
-
-    O export cobre o passado e só avança quando um download manual é feito; a
-    API cobre daqui para frente, sincronizada por scripts/garmin_sync.py. As
-    duas produzem `dict[date, DailyWellness]`, então basta fundir.
-
-    A API vem primeiro de propósito: `_merge` só preenche campo vazio, então
-    quem chega antes tem precedência — e o dado da API é o mais fresco, além de
-    trazer SpO2, que o export nunca preencheu.
-    """
-    api = GarminApiIngestion(GARMIN_API_DIR).load_all() if GARMIN_API_DIR.exists() else {}
-    export = GarminWellnessIngestion(GARMIN_DIR).load_all()
-
-    registros = {}
-    GarminWellnessIngestion._merge(registros, api)
-    GarminWellnessIngestion._merge(registros, export)
-
-    if api:
-        print(f"  wellness: {len(api)} dias da API + {len(export)} do export = {len(registros)} únicos")
-
-    return dict(sorted(registros.items()))
-
-
 def main():
     print("Carregando dados...")
 
-    garmin = _carregar_atividades_garmin()
-    strava = StravaIngestion(STRAVA_DIR).load_export_json()
-    wellness = _carregar_wellness()
-
-    garmin_only = _merge_garmin_into_strava(garmin, strava)
-    all_acts = sorted(garmin_only + strava, key=lambda a: a.start_time)
+    # Junção das fontes + dedup + classificação: ver processing/fontes.py
+    all_acts = montar_atividades()
+    wellness = carregar_wellness()
     print(f"  {len(all_acts)} atividades | {len(wellness)} dias de wellness")
 
     # Monta o documento
@@ -433,7 +321,7 @@ def main():
     print(f"  3. Faca upload de '{ATHLETE_CONTEXT.name}'")
     print("  4. Comece a conversar como treinador!")
     print("\nPara atualizar os dados:")
-    print("  python scripts/strava_export.py && python scripts/export_context.py")
+    print("  python scripts/atualizar.py")
     print("  (depois substitua o arquivo no Project)")
 
 

@@ -1,6 +1,15 @@
 #!/usr/bin/env python
 """
-Sincronização semanal pela API do Garmin Connect: wellness e atividades.
+Sincronização semanal com o Garmin Connect: wellness e atividades.
+
+Duas fontes possíveis, escolhidas por --fonte (padrão: auto):
+
+- personal: a Personal API oficial (chave em GARMIN_PERSONAL_API_KEY). Sem
+  MFA, token renovado sozinho — é o que deixa o agendador rodar sem você.
+  O que ela não entrega (VO2max) cai no garminconnect, se houver sessão.
+- garminconnect: a biblioteca não-oficial, como antes.
+
+auto = personal quando a chave existe no .env, garminconnect quando não.
 
 Baixa o que falta desde a última execução e grava o JSON cru em
 dados/garmin_api/. Não reprocessa nada: depois do sync, rode
@@ -15,13 +24,14 @@ Uso:
     python scripts/garmin_sync.py --desde 2026-08-01 # preencher um buraco maior
     python scripts/garmin_sync.py --ate 2026-08-31   # parar antes de ontem
     python scripts/garmin_sync.py --so-atividades    # pular o wellness
+    python scripts/garmin_sync.py --fonte garminconnect  # forçar o não-oficial
+    python scripts/garmin_sync.py --sem-fit          # não baixar os arquivos FIT
 
-Requer GARMIN_EMAIL e GARMIN_PASSWORD no .env (veja .env.example).
+Fonte personal: requer GARMIN_PERSONAL_API_KEY no .env. A chave expira (30 a
+365 dias, você escolhe ao gerar); quando expirar, o script falha dizendo isso.
 
-Primeira execução: rode **manualmente**, não pelo agendador. O login pode pedir
-MFA e precisa de terminal. Depois disso a sessão fica salva e as execuções
-agendadas passam a funcionar sozinhas — até o token expirar, quando o script
-falha pedindo outra execução manual.
+Fonte garminconnect: requer GARMIN_EMAIL e GARMIN_PASSWORD no .env. A primeira
+execução tem que ser manual (o login pode pedir MFA); depois a sessão fica salva.
 
 Agendamento no Windows (semanal):
     Agendador de Tarefas → Criar Tarefa Básica → Semanalmente
@@ -32,13 +42,15 @@ Agendamento no Windows (semanal):
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date
 
 from dotenv import load_dotenv
 
-from config import ENV_FILE, GARMIN_API_DIR
+from config import ENV_FILE, GARMIN_API_DIR, GARMIN_TOKENS
 from ingestion.garmin_api import GarminApiIngestion
+from ingestion.garmin_personal import ClienteHibrido, ClientePersonal
 
 load_dotenv(ENV_FILE)
 
@@ -50,6 +62,27 @@ def _data(texto: str) -> date:
         raise argparse.ArgumentTypeError(f"data inválida: {texto} (use AAAA-MM-DD)") from None
 
 
+def _montar_cliente(escolha: str):
+    """
+    Cliente da sincronização. None = deixa o GarminApiIngestion criar o
+    garminconnect sozinho (comportamento antigo).
+    """
+    tem_chave = bool(os.environ.get("GARMIN_PERSONAL_API_KEY", "").strip())
+    if escolha == "garminconnect" or (escolha == "auto" and not tem_chave):
+        return None
+
+    personal = ClientePersonal.do_ambiente()
+    # Fallback para o que a Personal não tem (VO2max). Só loga se for pedido,
+    # e se falhar (sessão expirada, MFA) derruba só aquele endpoint.
+    tem_login = (
+        bool(os.environ.get("GARMIN_EMAIL", "").strip())
+        or GARMIN_TOKENS.exists()
+    )
+    fabrica = GarminApiIngestion(GARMIN_API_DIR)._obter_cliente if tem_login else None
+    print(f"Fonte: Personal API{' + garminconnect para VO2max' if fabrica else ''}")
+    return ClienteHibrido(personal, fabrica_fallback=fabrica)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     parser.add_argument("--desde", type=_data, help="primeiro dia a buscar (AAAA-MM-DD)")
@@ -57,9 +90,16 @@ def main() -> int:
     parser.add_argument("--silencioso", action="store_true", help="não listar dia a dia")
     parser.add_argument("--so-wellness", action="store_true", help="pular as atividades")
     parser.add_argument("--so-atividades", action="store_true", help="pular o wellness")
+    parser.add_argument("--fonte", choices=["auto", "personal", "garminconnect"],
+                        default="auto", help="de onde buscar (padrão: auto)")
+    parser.add_argument("--sem-fit", action="store_true", help="não baixar os arquivos FIT")
     args = parser.parse_args()
 
-    fonte = GarminApiIngestion(GARMIN_API_DIR)
+    try:
+        fonte = GarminApiIngestion(GARMIN_API_DIR, cliente=_montar_cliente(args.fonte))
+    except RuntimeError as erro:
+        print(f"\nERRO: {erro}", file=sys.stderr)
+        return 1
 
     falhas = []
 
@@ -72,19 +112,24 @@ def main() -> int:
             return 1
         print(f"  {relatorio['baixados']} dia-endpoint baixados, "
               f"{relatorio['pulados']} já em cache")
+        if relatorio["indisponiveis"]:
+            print(f"  sem fonte para: {', '.join(sorted(set(relatorio['indisponiveis'])))}")
         falhas += relatorio["falhas"]
 
     if not args.so_wellness:
         print("\n[atividades]")
         try:
             relatorio = fonte.sync_activities(
-                ate=args.ate, desde=args.desde, verbose=not args.silencioso
+                ate=args.ate, desde=args.desde, verbose=not args.silencioso,
+                baixar_fit=not args.sem_fit,
             )
         except RuntimeError as erro:
             print(f"\nERRO: {erro}", file=sys.stderr)
             return 1
-        print(f"  {relatorio['atividades']} atividades, "
-              f"{relatorio['detalhes']} blocos de detalhe novos")
+        print(f"  {relatorio['atividades']} atividades na janela: "
+              f"{relatorio['novas']} novas, {relatorio['alteradas']} alteradas, "
+              f"{len(relatorio['removidas'])} removidas no Connect")
+        print(f"  {relatorio['detalhes']} blocos de detalhe e {relatorio['fits']} FIT baixados")
         falhas += relatorio["falhas"]
 
     if falhas:
