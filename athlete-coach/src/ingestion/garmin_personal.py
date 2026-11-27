@@ -174,6 +174,63 @@ def _ler_token(resposta: dict) -> tuple[str, datetime]:
     return token, validade
 
 
+# Cabeçalhos onde o token pode vir quando o corpo está vazio
+_CABECALHOS_TOKEN = ("authorization", "x-access-token", "access-token", "x-auth-token")
+
+
+def _parece_token(texto: str) -> bool:
+    """Uma linha só, sem espaço, comprida: é token (JWT ou opaco), não HTML nem mensagem."""
+    return len(texto) >= 20 and not any(c.isspace() for c in texto) and "<" not in texto
+
+
+def _interpretar_resposta_token(resposta: httpx.Response) -> tuple[str, datetime]:
+    """
+    Lê o token da resposta da troca de chave, seja qual for o formato.
+
+    O FAQ não documenta o corpo, e na primeira execução real (27/11/2026) ele
+    não veio como JSON. Então aceita, em ordem:
+
+    1. JSON objeto ({"access_token": ...}) → `_ler_token`
+    2. JSON string ("eyJ...") ou texto puro com cara de token
+    3. corpo vazio com o token num cabeçalho
+
+    Se nada servir, o erro diz status, tipo de conteúdo e o começo do corpo —
+    o suficiente para ajustar sem expor o token.
+    """
+    texto = resposta.text.strip()
+
+    try:
+        dados = resposta.json() if texto else None
+    except ValueError:
+        dados = None
+
+    if isinstance(dados, dict):
+        return _ler_token(dados)
+    if isinstance(dados, str) and _parece_token(dados.strip()):
+        token = dados.strip()
+        return token, _exp_do_jwt(token) or datetime.now() + VALIDADE_PADRAO
+    if dados is None and _parece_token(texto.strip('"')):
+        token = texto.strip('"')
+        return token, _exp_do_jwt(token) or datetime.now() + VALIDADE_PADRAO
+
+    for nome in _CABECALHOS_TOKEN:
+        valor = resposta.headers.get(nome, "").strip()
+        if valor.lower().startswith("bearer "):
+            valor = valor[7:].strip()
+        if _parece_token(valor):
+            return valor, _exp_do_jwt(valor) or datetime.now() + VALIDADE_PADRAO
+
+    raise RuntimeError(
+        "Não reconheci a resposta da troca de chave por token: "
+        f"HTTP {resposta.status_code}, content-type "
+        f"'{resposta.headers.get('content-type', '?')}', {len(resposta.content)} bytes, "
+        f"cabeçalhos {sorted(resposta.headers.keys())}, "
+        f"início do corpo: {texto[:200]!r}"
+        + (f", redireciona para {resposta.headers.get('location')}"
+           if 300 <= resposta.status_code < 400 else "")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cliente
 # ---------------------------------------------------------------------------
@@ -244,7 +301,7 @@ class ClientePersonal:
         if resposta.status_code >= 400:
             raise ApiError(resposta.status_code, ROTA_TOKEN, resposta.text)
 
-        self._token, self._validade = _ler_token(resposta.json())
+        self._token, self._validade = _interpretar_resposta_token(resposta)
 
         if self._cache_token:
             # Token no disco evita trocar a chave a cada execução. Fica em
