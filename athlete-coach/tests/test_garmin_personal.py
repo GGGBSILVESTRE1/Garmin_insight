@@ -133,3 +133,21 @@ def test_le_token_sem_expires_in_pelo_exp_do_jwt():
     valor, validade = gp._ler_token({"accessToken": token})
     assert valor == token and validade.year == 2100
     assert gp.escopos_do_jwt(token) == ["A", "B"]
+
+
+@pytest.mark.parametrize("resposta", [
+    httpx.Response(200, text="eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.assinatura"),
+    httpx.Response(200, json="eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.assinatura"),
+    httpx.Response(200, headers={"Authorization": "Bearer opaco-1234567890abcdefghij"}),
+])
+def test_token_em_formato_nao_json_e_aceito(resposta):
+    token, _ = gp._interpretar_resposta_token(resposta)
+    assert token.startswith(("eyJ", "opaco"))
+
+
+def test_resposta_irreconhecivel_explica_o_que_veio():
+    resposta = httpx.Response(302, headers={"location": "https://sso.garmin.com/x"})
+    with pytest.raises(RuntimeError, match="HTTP 302.*sso.garmin.com"):
+        gp._interpretar_resposta_token(resposta)
+    with pytest.raises(RuntimeError, match="<html>"):
+        gp._interpretar_resposta_token(httpx.Response(200, text="<html>login</html>"))
