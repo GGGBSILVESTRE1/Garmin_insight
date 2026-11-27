@@ -113,3 +113,19 @@ def test_wellness_pula_endpoint_sem_fonte(tmp_path):
     assert r["indisponiveis"] == ["vo2max"]
     assert r["baixados"] == 8  # 4 endpoints × 2 dias
     assert fonte.load_all()[date(2026, 10, 1)].resting_hr == 50
+
+
+def test_catalogo_nasce_com_o_que_ja_estava_em_cache(tmp_path):
+    # Cache antigo (do garminconnect), sem catálogo ainda
+    antigo = ClienteFalso([resumo(1, inicio="2026-08-01 10:00:00")])
+    fonte = _fonte(tmp_path, antigo)
+    fonte.sync_activities(desde=date(2026, 8, 1), ate=date(2026, 8, 2), verbose=False)
+    (tmp_path / "catalogo.csv").unlink()
+
+    novo = ClienteFalso([resumo(2, inicio="2026-10-01 10:00:00")])
+    _fonte(tmp_path, novo).sync_activities(
+        desde=date(2026, 9, 25), ate=date(2026, 10, 2), verbose=False)
+    from ingestion.catalogo import Catalogo
+    linhas = Catalogo.abrir(tmp_path / "catalogo.csv").linhas
+    assert set(linhas) == {"1", "2"}
+    assert linhas["1"].fonte_resumo == "cache" and not linhas["1"].removida_em

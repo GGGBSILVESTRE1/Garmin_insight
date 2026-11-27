@@ -31,4 +31,4 @@ def test_aplicar_grava_em_extra():
     aplicar([a])
     assert a.extra["categoria"] == "corrida"
     assert a.extra["ambiente"] == "rua"
-    assert a.extra["flags"] == "curta"
+    assert a.extra["flags_qualidade"] == "curta"

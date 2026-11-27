@@ -496,8 +496,31 @@ class GarminApiIngestion:
 
     def _catalogo(self) -> Catalogo:
         if self._cat is None:
+            existia = self.catalogo_path.exists()
             self._cat = Catalogo.abrir(self.catalogo_path)
+            if not existia:
+                self._semear_catalogo(self._cat)
         return self._cat
+
+    def _semear_catalogo(self, catalogo: Catalogo) -> None:
+        """
+        Primeira vez com catálogo: registra o que já está no cache em disco.
+
+        Sem isso o catálogo nasceria só com a janela do primeiro sync, e as
+        atividades antigas (baixadas pelo garminconnect antes do catálogo
+        existir) ficariam fora do índice para sempre. Não grava: quem salva é
+        o sync, depois de comparar com a lista nova.
+        """
+        for arquivo in sorted(self._pasta("activities").glob("*.json")):
+            payload = self._ler_json("activities", arquivo.stem)
+            if not isinstance(payload, dict) or not payload.get("activityId"):
+                continue
+            catalogo.registrar(payload, fonte="cache")
+            catalogo.marcar_detalhes(
+                arquivo.stem,
+                tem_fit=self._detalhe_existe("fit", arquivo.stem),
+                tem_series=self._detalhe_existe("exercise_sets", arquivo.stem),
+            )
 
     def _inicio_atividades(self, ate: date, catalogo: Catalogo | None = None) -> date:
         """

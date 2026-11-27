@@ -13,7 +13,7 @@ Três saídas por atividade:
 - `categoria`: corrida, musculacao, caminhada, bike, cardio, natacao, outro
 - `ambiente`: rua, esteira, pista, trilha, indoor, piscina, aguas_abertas
   (ou None quando não se aplica, ex.: musculação)
-- `flags`: checagens de qualidade separadas por ";" — o que hoje você só
+- `flags_qualidade`: checagens de qualidade separadas por ";" — o que hoje você só
   descobre abrindo o notebook
 
 As regras têm versão (`VERSAO_REGRAS`). Mudou uma regra, sobe a versão: o
@@ -193,7 +193,8 @@ def aplicar(activities: list) -> list:
 
     Vai para `extra` (e não para campos novos da dataclass) porque `extra` já
     vira coluna de CSV sozinho em `build_tables` — `categoria`, `ambiente` e
-    `flags` aparecem em activities.csv sem mexer no writer.
+    `flags_qualidade` aparecem em activities.csv sem mexer no writer. (Não é
+    `flags` porque `df.flags` já é um atributo do pandas e esconderia a coluna.)
     """
     for a in activities:
         c = classificar(a)
@@ -203,7 +204,7 @@ def aplicar(activities: list) -> list:
         else:
             a.extra.pop("ambiente", None)
         if c.flags:
-            a.extra["flags"] = c.flags_texto
+            a.extra["flags_qualidade"] = c.flags_texto
         else:
-            a.extra.pop("flags", None)
+            a.extra.pop("flags_qualidade", None)
     return activities

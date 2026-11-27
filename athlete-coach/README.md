@@ -179,7 +179,7 @@ Estas são as armadilhas reais dos dados, verificadas empiricamente.
 | **`calories` é vazio em treinos só-Strava** | O export do Strava não tem esse campo. 94 das 176 linhas ficam sem calorias |
 | **`max_weight` e `volume` são sempre 0** em `strength_sets.csv` | O relógio conta séries e repetições, mas não registra carga. Progressão de força precisa de outra fonte |
 | **`tss` usa referências fixas** (FTP 250 W só para bike, FC 185 para o resto) | Se não forem os seus valores, a escala inteira de CTL/ATL/TSB está deslocada. Ajuste `FTP_BIKE_W` e `FC_REFERENCIA` em `processing/metrics.py`. Até nov/2026 a potência de corrida era dividida pelo FTP de bike, o que inflava o TSS (344 numa esteira de 47 min) |
-| **`categoria`, `ambiente` e `flags`** em `activities.csv` | Classificação por regras (`ingestion/classificacao.py`): separa esteira de rua e marca problemas como `potencia_esteira`, `sem_fc`, `series_sem_carga`. Filtre esteira por `ambiente`, não por `sport` |
+| **`categoria`, `ambiente` e `flags_qualidade`** em `activities.csv` | Classificação por regras (`ingestion/classificacao.py`): separa esteira de rua e marca problemas como `potencia_esteira`, `sem_fc`, `series_sem_carga`. Filtre esteira por `ambiente`, não por `sport` |
 | **`source` distingue a origem** | `strava` (94) = só Strava; `strava+garmin` (82) = os dois fundidos. Colunas de zona, RPE e dinâmica só existem nas linhas fundidas |
 | **`vo2max` preenchido em 36 de 176 linhas** | O Garmin só estima em corridas ao ar livre com GPS |
 | **Distribuição desbalanceada** | Run 126, WeightTraining 39, Workout 5, Walk 3, Ride 2, Swim 1. Só corrida tem massa para análise estatística |
