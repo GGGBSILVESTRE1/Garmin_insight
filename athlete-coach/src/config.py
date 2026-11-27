@@ -23,6 +23,10 @@ DADOS_DIR = ROOT / "dados"
 GARMIN_DIR = DADOS_DIR / "garmin"  # export GDPR (atividades + wellness)
 GARMIN_API_DIR = DADOS_DIR / "garmin_api"  # cache cru das respostas da API do Connect
 GARMIN_TOKENS = DADOS_DIR / ".garmin_tokens"  # sessão salva do garth — nunca versionar
+# Token da Personal API (oficial), renovado sozinho a cada ~24 h — nunca versionar
+GARMIN_PERSONAL_TOKEN = DADOS_DIR / ".garmin_personal_token.json"
+# Índice das atividades já baixadas: o que o sync consulta para achar o que é novo
+CATALOGO_ATIVIDADES = DADOS_DIR / "catalogo_atividades.csv"
 STRAVA_DIR = DADOS_DIR / "strava"
 STRAVA_ACTIVITIES = STRAVA_DIR / "activities.json"
 IMG_DIR = ROOT / "img"

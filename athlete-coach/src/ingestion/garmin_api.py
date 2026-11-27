@@ -6,12 +6,15 @@ depende de um download manual mensal; este mantém a série viva semana a semana
 Os dois produzem `dict[date, DailyWellness]`, então `metrics`, `build_tables`,
 os CSVs e os notebooks não sabem — nem precisam saber — de onde veio o dia.
 
-**Não existe API self-service do Garmin para os próprios dados.** A oficial é o
-Developer Program, com aprovação por parceria. O caminho usado aqui é a
-biblioteca não-oficial `garminconnect` (que roda sobre o `garth`): login com as
-credenciais do Connect e sessão salva em disco. Funciona bem para uso pessoal e
-quebra quando o Garmin mexe no login — por isso tudo que é específico da
-biblioteca está isolado em dois lugares: `ENDPOINTS` e `_obter_cliente()`.
+Duas fontes podem estar do outro lado, e esta classe não sabe qual: ela só
+chama métodos como `get_sleep_data` num objeto `cliente`.
+
+- `garminconnect` (não-oficial, sobre o `garth`): o cliente padrão, criado em
+  `_obter_cliente()`. Login com as credenciais do Connect, quebra quando o
+  Garmin mexe no login.
+- Personal API (oficial, out/2026): `ingestion.garmin_personal.ClienteHibrido`
+  expõe os mesmos nomes de método. É o que `scripts/garmin_sync.py` usa quando
+  há `GARMIN_PERSONAL_API_KEY` no .env.
 
 ## Buscar e interpretar são etapas separadas
 
@@ -40,7 +43,9 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from config import GARMIN_TOKENS
+from config import CATALOGO_ATIVIDADES, GARMIN_TOKENS
+from ingestion.catalogo import Catalogo
+from ingestion.garmin_personal import IndisponivelError
 from ingestion.garmin_wellness import DailyWellness, GarminWellnessIngestion
 
 # ---------------------------------------------------------------------------
@@ -234,9 +239,15 @@ class GarminApiIngestion:
     `ENDPOINTS`, `sync()` roda sem rede e sem credencial.
     """
 
-    def __init__(self, cache_dir: str | Path, cliente=None):
+    def __init__(self, cache_dir: str | Path, cliente=None,
+                 catalogo_path: str | Path | None = None):
         self.cache_dir = Path(cache_dir)
         self._cliente = cliente
+        # Catálogo mora ao lado do cache por padrão; em teste, numa pasta temporária
+        self.catalogo_path = Path(catalogo_path) if catalogo_path else (
+            self.cache_dir.parent / CATALOGO_ATIVIDADES.name
+        )
+        self._cat: Catalogo | None = None
 
     # ------------------------------------------------------------------
     # API pública
@@ -280,9 +291,14 @@ class GarminApiIngestion:
         cliente = self._obter_cliente()
         limite_rebusca = ate - timedelta(days=rebusca - 1)
 
-        relatorio = {"baixados": 0, "pulados": 0, "falhas": []}
+        relatorio = {"baixados": 0, "pulados": 0, "falhas": [], "indisponiveis": []}
 
         for endpoint, metodo in ENDPOINTS.items():
+            # Cliente híbrido (Personal API) diz de antemão o que não tem
+            if hasattr(cliente, "suporta") and not cliente.suporta(metodo):
+                relatorio["indisponiveis"].append(endpoint)
+                continue
+
             existentes = self._dias_em_cache(endpoint)
             inicio = desde or self._inicio_padrao(existentes, ate, rebusca)
 
@@ -301,6 +317,12 @@ class GarminApiIngestion:
 
                 try:
                     payload = getattr(cliente, metodo)(dia.isoformat())
+                except IndisponivelError as erro:
+                    # A fonte não tem esse dado (não é falha do dia): para de
+                    # perguntar o mesmo endpoint dia após dia
+                    relatorio["indisponiveis"].append(endpoint)
+                    relatorio["falhas"].append((endpoint, dia.isoformat(), str(erro)[:150]))
+                    break
                 except Exception as erro:  # a lib levanta exceções variadas
                     relatorio["falhas"].append((endpoint, dia.isoformat(), str(erro)[:150]))
                     continue
@@ -330,8 +352,13 @@ class GarminApiIngestion:
         musculação.
         """
         atividades = []
+        # Atividade apagada no Connect continua em disco (o cru não se apaga),
+        # mas sai da análise
+        removidas = self._catalogo().removidas()
 
         for arquivo in sorted(self._pasta("activities").glob("*.json")):
+            if arquivo.stem in removidas:
+                continue
             payload = self._ler_json("activities", arquivo.stem)
             if not isinstance(payload, dict):
                 continue
@@ -348,23 +375,32 @@ class GarminApiIngestion:
         return sorted(atividades, key=lambda a: a.start_time)
 
     def sync_activities(self, desde: date | None = None, ate: date | None = None,
-                        verbose: bool = True) -> dict:
+                        verbose: bool = True, baixar_fit: bool = True) -> dict:
         """
         Baixa as atividades do período e os detalhes de cada uma.
 
-        A lista vem numa chamada só, então o resumo é sempre regravado — é
-        barato e absorve renomeações e correções de esporte feitas depois.
-        Já os detalhes (zonas, séries) custam uma chamada por atividade e não
-        mudam depois do treino: são buscados **uma vez** e nunca mais.
+        A lista vem numa chamada só (paginada), e cada resumo passa pelo
+        catálogo (`ingestion.catalogo`), que diz se a atividade é nova, se
+        mudou desde o último sync ou se está igual. O resumo é regravado
+        sempre que muda — absorve renomeações e correções de esporte. Os
+        detalhes (zonas, séries, FIT) custam uma chamada cada e não mudam
+        depois do treino: são buscados **uma vez** e nunca mais.
+
+        Atividade que estava no catálogo, cai dentro da janela consultada e não
+        veio na lista é marcada como removida (o arquivo cru fica).
 
         `ate` inclui hoje, ao contrário do wellness: uma atividade fica completa
         assim que sobe do relógio, não precisa o dia fechar.
         """
         ate = ate or date.today()
         cliente = self._obter_cliente()
-        desde = desde or self._inicio_atividades(ate)
+        catalogo = self._catalogo()
+        desde = desde or self._inicio_atividades(ate, catalogo)
+        # ClienteHibrido tem o atributo `personal`; o garminconnect puro não
+        fonte = "personal" if "personal" in vars(cliente) else "garminconnect"
 
-        relatorio = {"atividades": 0, "detalhes": 0, "falhas": []}
+        relatorio = {"atividades": 0, "novas": 0, "alteradas": 0, "detalhes": 0,
+                     "fits": 0, "removidas": [], "falhas": []}
 
         try:
             listar = getattr(cliente, ENDPOINTS_ATIVIDADE["activities"])
@@ -376,42 +412,131 @@ class GarminApiIngestion:
         if verbose:
             print(f"  {len(lista)} atividades entre {desde} e {ate}")
 
+        detalhes = dict(DETALHES_ATIVIDADE)
+        # O FIT só vem pela Personal API (o garminconnect usa outra assinatura
+        # para download); com o cliente não-oficial puro, segue sem FIT
+        if baixar_fit and hasattr(cliente, "download_activity_fit"):
+            detalhes["fit"] = "download_activity_fit"
+
+        vistos: set[str] = set()
+        indisponiveis: set[str] = set()
+
         for atividade in lista:
             if not isinstance(atividade, dict):
                 continue
             aid = str(atividade.get("activityId") or "").strip()
             if not aid:
                 continue
+            vistos.add(aid)
 
-            self._gravar_json("activities", aid, atividade)
+            status = catalogo.registrar(atividade, fonte=fonte)
+            if status != "igual" or not (self._pasta("activities") / f"{aid}.json").exists():
+                self._gravar_json("activities", aid, atividade)
             relatorio["atividades"] += 1
+            relatorio["novas"] += status == "nova"
+            relatorio["alteradas"] += status == "alterada"
 
-            for chave in ("hr_zones", "power_zones", "exercise_sets"):
-                if (self._pasta(chave) / f"{aid}.json").exists():
+            for chave, metodo in detalhes.items():
+                if chave in indisponiveis or self._detalhe_existe(chave, aid):
+                    continue
+                if hasattr(cliente, "suporta") and not cliente.suporta(metodo):
+                    indisponiveis.add(chave)
                     continue
                 try:
-                    payload = getattr(cliente, ENDPOINTS_ATIVIDADE[chave])(aid)
+                    payload = getattr(cliente, metodo)(aid)
+                except IndisponivelError as erro:
+                    indisponiveis.add(chave)  # a fonte não tem: não insiste
+                    relatorio["falhas"].append((chave, aid, str(erro)[:150]))
+                    continue
                 except Exception as erro:
                     relatorio["falhas"].append((chave, aid, str(erro)[:150]))
                     continue
 
-                self._gravar_json(chave, aid, payload)
-                relatorio["detalhes"] += 1
+                if chave == "fit":
+                    self._gravar_fit(aid, payload)
+                    relatorio["fits"] += 1
+                else:
+                    self._gravar_json(chave, aid, payload)
+                    relatorio["detalhes"] += 1
                 time.sleep(PAUSA_ENTRE_CHAMADAS)
 
-            if verbose:
-                nome = atividade.get("activityName", "?")
-                print(f"    {atividade.get('startTimeLocal', '?')[:10]}  {nome}")
+            catalogo.marcar_detalhes(
+                aid,
+                tem_fit=self._detalhe_existe("fit", aid),
+                tem_series=self._detalhe_existe("exercise_sets", aid),
+            )
 
+            if verbose and status != "igual":
+                nome = atividade.get("activityName", "?")
+                print(f"    [{status}] {atividade.get('startTimeLocal', '?')[:10]}  {nome}")
+
+        relatorio["removidas"] = catalogo.marcar_removidas(vistos, desde, ate)
+        catalogo.salvar()
         return relatorio
 
-    def _inicio_atividades(self, ate: date) -> date:
+    def _detalhe_existe(self, chave: str, aid: str) -> bool:
+        if chave == "fit":
+            return (self._pasta("fit") / f"{aid}.zip").exists()
+        return (self._pasta(chave) / f"{aid}.json").exists()
+
+    def _gravar_fit(self, aid: str, conteudo: bytes) -> Path:
         """
-        Retrocede até a última atividade em cache, menos a janela de rebusca.
+        Grava o arquivo original como veio (zip com o .fit dentro).
+
+        Escrita atômica (tmp + replace): um download interrompido não deixa um
+        zip pela metade que depois seria tomado como "já baixado".
+        """
+        pasta = self._pasta("fit")
+        pasta.mkdir(parents=True, exist_ok=True)
+        destino = pasta / f"{aid}.zip"
+        tmp = destino.with_suffix(".zip.tmp")
+        tmp.write_bytes(conteudo or b"")
+        os.replace(tmp, destino)
+        return destino
+
+    def _catalogo(self) -> Catalogo:
+        if self._cat is None:
+            existia = self.catalogo_path.exists()
+            self._cat = Catalogo.abrir(self.catalogo_path)
+            if not existia:
+                self._semear_catalogo(self._cat)
+        return self._cat
+
+    def _semear_catalogo(self, catalogo: Catalogo) -> None:
+        """
+        Primeira vez com catálogo: registra o que já está no cache em disco.
+
+        Sem isso o catálogo nasceria só com a janela do primeiro sync, e as
+        atividades antigas (baixadas pelo garminconnect antes do catálogo
+        existir) ficariam fora do índice para sempre. Não grava: quem salva é
+        o sync, depois de comparar com a lista nova.
+        """
+        for arquivo in sorted(self._pasta("activities").glob("*.json")):
+            payload = self._ler_json("activities", arquivo.stem)
+            if not isinstance(payload, dict) or not payload.get("activityId"):
+                continue
+            catalogo.registrar(payload, fonte="cache")
+            catalogo.marcar_detalhes(
+                arquivo.stem,
+                tem_fit=self._detalhe_existe("fit", arquivo.stem),
+                tem_series=self._detalhe_existe("exercise_sets", arquivo.stem),
+            )
+
+    def _inicio_atividades(self, ate: date, catalogo: Catalogo | None = None) -> date:
+        """
+        Marca d'água: última atividade conhecida menos a janela de rebusca.
+
+        Usa o catálogo quando ele existe; no primeiro sync depois da troca para
+        o catálogo, cai na varredura do cache em disco (o comportamento antigo).
 
         A janela é maior que a do wellness porque atividade é editável: nome,
         esporte e até a percepção de esforço podem mudar dias depois do treino.
         """
+        if catalogo is not None:
+            marca = catalogo.marca_dagua(DIAS_REBUSCA_ATIVIDADES)
+            if marca is not None:
+                return marca
+
         ultima = None
         for arquivo in self._pasta("activities").glob("*.json"):
             payload = self._ler_json("activities", arquivo.stem)
@@ -583,6 +708,10 @@ ENDPOINTS_ATIVIDADE = {
     "power_zones": "get_activity_power_in_timezones",
     "exercise_sets": "get_activity_exercise_sets",
 }
+
+# Blocos de detalhe buscados uma vez por atividade (o FIT entra à parte, só
+# quando o cliente sabe baixar — o garminconnect usa outro nome de método)
+DETALHES_ATIVIDADE = {k: v for k, v in ENDPOINTS_ATIVIDADE.items() if k != "activities"}
 
 # Atividades podem ser renomeadas, ter o esporte corrigido ou subir com atraso,
 # então a janela de rebusca é maior que a do wellness.

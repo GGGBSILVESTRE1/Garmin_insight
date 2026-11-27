@@ -71,21 +71,46 @@ existe nos CSVs; `01_wellness`, `02_activities` e `03_load_recovery` analisam ca
 ### Sincronização semanal
 
 ```bash
-python scripts/strava_export.py    # atividades
-python scripts/garmin_sync.py      # wellness (sono, HRV, FC de repouso, SpO2)
-python scripts/export_context.py   # reprocessa os CSVs
+python scripts/atualizar.py        # sync do Garmin + reprocessa os CSVs (é o que o agendador chama)
 ```
 
-O `garmin_sync.py` usa a biblioteca não-oficial `garminconnect` — não existe API
-self-service do Garmin para os próprios dados. **Rode a primeira vez
-manualmente**, não pelo agendador: o login pode pedir MFA e precisa de terminal.
-Depois a sessão fica salva em `dados/.garmin_tokens` e as execuções agendadas
-funcionam sozinhas, até o token expirar — aí o script falha pedindo outra
-execução manual.
+O `garmin_sync.py` (chamado pelo `atualizar.py`) tem duas fontes:
 
-Ele busca só o que falta desde a última vez, e revisita os últimos dias de cada
-rodada porque o Garmin revisa score de sono e HRV depois do fato. Para preencher
-um período maior de uma vez: `python scripts/garmin_sync.py --desde 2026-08-01`.
+- **Personal API** (oficial, liberada em out/2026): ativa quando
+  `GARMIN_PERSONAL_API_KEY` está no `.env`. Gere a chave em Garmin Connect web →
+  Configurações → Personal API Key. Não pede MFA, então o agendador roda sozinho
+  até a chave expirar (30 a 365 dias, você escolhe).
+- **`garminconnect`** (não-oficial): usada quando não há chave, e como fallback
+  só para o que a Personal API não entrega (VO2max). O login pode pedir MFA, então
+  a primeira execução dessa fonte tem que ser manual.
+
+**Antes de confiar na Personal API, rode o teste exploratório** uma vez:
+
+```bash
+python scripts/explorar_personal_api.py
+```
+
+Ele compara campo a campo o que a API oficial devolve com o que o
+`garminconnect` já gravou em `dados/garmin_api/` (mesmas atividades, mesmos
+dias), inspeciona o FIT e grava um relatório em `dados/exploracao_personal/`.
+As rotas de zonas, séries, sono e SpO2 em `ingestion/garmin_personal.py` são
+candidatas até esse teste confirmar.
+
+Como o incremental funciona:
+
+- **Atividades**: `dados/catalogo_atividades.csv` guarda uma linha por
+  `activityId`. A busca começa na última atividade conhecida menos 7 dias; cada
+  resumo é comparado por hash e sai como nova, alterada ou igual. Zonas, séries
+  e o FIT (`dados/garmin_api/fit/<id>.zip`) são baixados uma vez só. Atividade
+  apagada no Connect é marcada como removida no catálogo e sai da análise, mas o
+  arquivo cru fica.
+- **Wellness**: só os dias que faltam, mais uma rebusca dos últimos 3 dias
+  (o Garmin revisa sono e HRV depois do fato).
+- **Tabelas**: `dados/processed/` é reconstruído inteiro a cada execução, a
+  partir do cache cru. São segundos de CPU, e é o que garante que rodar duas
+  vezes dá o mesmo resultado (há teste para isso).
+
+O Strava (`strava_export.py`) virou só o histórico anterior ao relógio.
 
 ## Os dados
 
@@ -153,7 +178,8 @@ Estas são as armadilhas reais dos dados, verificadas empiricamente.
 | **`calories` do Garmin é dividido por 10** — inferido, não confirmado | Os valores brutos davam 39-51 kcal/min (impossível); ÷10 dá 2-12 kcal/min. A escala é plausível mas não validada contra fonte externa. **Não use como número absoluto** |
 | **`calories` é vazio em treinos só-Strava** | O export do Strava não tem esse campo. 94 das 176 linhas ficam sem calorias |
 | **`max_weight` e `volume` são sempre 0** em `strength_sets.csv` | O relógio conta séries e repetições, mas não registra carga. Progressão de força precisa de outra fonte |
-| **`tss` usa referências fixas** (FTP 250 W, FC máx 185) | Se não forem os seus valores, a escala inteira de CTL/ATL/TSB está deslocada. Ajuste em `TrainingLoadMetrics.training_stress_score` |
+| **`tss` usa referências fixas** (FTP 250 W só para bike, FC 185 para o resto) | Se não forem os seus valores, a escala inteira de CTL/ATL/TSB está deslocada. Ajuste `FTP_BIKE_W` e `FC_REFERENCIA` em `processing/metrics.py`. Até nov/2026 a potência de corrida era dividida pelo FTP de bike, o que inflava o TSS (344 numa esteira de 47 min) |
+| **`categoria`, `ambiente` e `flags_qualidade`** em `activities.csv` | Classificação por regras (`ingestion/classificacao.py`): separa esteira de rua e marca problemas como `potencia_esteira`, `sem_fc`, `series_sem_carga`. Filtre esteira por `ambiente`, não por `sport` |
 | **`source` distingue a origem** | `strava` (94) = só Strava; `strava+garmin` (82) = os dois fundidos. Colunas de zona, RPE e dinâmica só existem nas linhas fundidas |
 | **`vo2max` preenchido em 36 de 176 linhas** | O Garmin só estima em corridas ao ar livre com GPS |
 | **Distribuição desbalanceada** | Run 126, WeightTraining 39, Workout 5, Walk 3, Ride 2, Swim 1. Só corrida tem massa para análise estatística |
@@ -181,8 +207,8 @@ dados/garmin/.../summarizedActivities.json (82 atividades)
 dados/strava/activities.json (176 atividades)
        │  StravaIngestion.load_export_json()
        ▼
-_merge_garmin_into_strava()   ── funde o treino Garmin no gêmeo do Strava
-       │                         (±10 min de início, ±200 m de distância)
+fundir_garmin_no_strava()     ── funde o treino Garmin no gêmeo do Strava
+       │                         (1:1, ±10 min, ±200 m, mesma categoria)
        │                         mantém zonas de FC, RPE, séries, calorias
        ▼
 lista unificada de Activity
@@ -208,6 +234,9 @@ registros são fundidos, e não deduplicados.
 ```
 athlete-coach/
 ├── scripts/
+│   ├── atualizar.py         # entrada do agendador: sync + reprocessa
+│   ├── garmin_sync.py       # sync incremental (Personal API ou garminconnect)
+│   ├── explorar_personal_api.py  # teste exploratório da API oficial
 │   ├── strava_export.py     # OAuth + download das atividades do Strava
 │   └── export_context.py    # orquestra a ingestão e gera as saídas
 ├── src/
@@ -215,9 +244,13 @@ athlete-coach/
 │   ├── ingestion/
 │   │   ├── garmin.py           # .fit, CSV e JSON do export GDPR
 │   │   ├── garmin_wellness.py  # sono, HRV, estresse, VO2max (export GDPR)
-│   │   ├── garmin_api.py       # os mesmos dados via API do Connect, semanal
+│   │   ├── garmin_api.py       # sync + cache cru + parsers da API do Connect
+│   │   ├── garmin_personal.py  # cliente da Personal API (oficial) e cliente híbrido
+│   │   ├── catalogo.py         # índice das atividades baixadas (novas/alteradas/removidas)
+│   │   ├── classificacao.py    # categoria, ambiente e flags por regra
 │   │   └── strava.py           # activities.json
 │   └── processing/
+│       ├── fontes.py           # junta Garmin + Strava sem duplicar e classifica
 │       ├── metrics.py          # CTL/ATL/TSB, resumos, build_tables
 │       ├── datasets.py         # loaders dos CSVs para os notebooks
 │       ├── features.py         # semana, lags, nulos, correlação
